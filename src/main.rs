@@ -28,7 +28,21 @@ enum Cmd {
     List {
         tags: Vec<String>,
     },
+    Help,
 }
+
+const HELP: &str = "\
+zz - tmux session manager
+
+usage:
+  zz add <path> <name> <tag> [--create-tag]   register a directory
+  zz rm <name>                                remove an entry
+  zz run <tag>                                start every session in the tag
+  zz kill <tag>                               kill the tag's sessions
+  zz status [tag]                             report what is running
+  zz list [tag...]                            list what is registered
+
+tags are never created implicitly, pass --create-tag to add a new one";
 
 fn parse(args: &[String]) -> Result<Cmd, String> {
     if args.is_empty() {
@@ -95,6 +109,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
         "list" => Ok(Cmd::List {
             tags: rest.to_vec(),
         }),
+        "--help" | "-h" | "help" => Ok(Cmd::Help),
         other => Err(format!("command not valid: '{other}', check zz --help")),
     }
 }
@@ -413,5 +428,7 @@ fn run(command: Cmd) {
                 }
             }
         }
+
+        Cmd::Help => println!("{HELP}"),
     }
 }
