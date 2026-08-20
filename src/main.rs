@@ -3,8 +3,6 @@ mod storage;
 
 use std::process::Command;
 
-const SHELLS: &[&str] = &["bash", "zsh", "fish", "sh", "dash"];
-
 #[derive(Debug)]
 enum Cmd {
     Add {
@@ -24,9 +22,17 @@ enum Cmd {
     },
     Status {
         tag: Option<String>,
+        all: bool,
     },
     List {
         tags: Vec<String>,
+    },
+    TagAdd {
+        name: String,
+    },
+    TagRm {
+        name: String,
+        force: bool,
     },
     Help,
 }
@@ -39,8 +45,10 @@ usage:
   zz rm <name>                                remove an entry
   zz run <tag>                                start every session in the tag
   zz kill <tag>                               kill the tag's sessions
-  zz status [tag]                             report what is running
+  zz status [tag] [--all]                     report running sessions, --all for stopped too
   zz list [tag...]                            list what is registered
+  zz tag add <name>                           create a tag
+  zz tag rm <name> [--force]                  delete a tag, --force if not empty
 
 tags are never created implicitly, pass --create-tag to add a new one";
 
@@ -99,16 +107,59 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                 tag: rest[0].clone(),
             })
         }
-        "status" => match rest.len() {
-            0 => Ok(Cmd::Status { tag: None }),
-            1 => Ok(Cmd::Status {
-                tag: Some(rest[0].clone()),
-            }),
-            _ => Err("usage: status [tag]".to_string()),
-        },
+        "status" => {
+            let mut all = false;
+            let mut positional = Vec::new();
+
+            for a in rest {
+                if a == "--all" {
+                    all = true;
+                } else {
+                    positional.push(a.clone());
+                }
+            }
+
+            match positional.len() {
+                0 => Ok(Cmd::Status { tag: None, all }),
+                1 => Ok(Cmd::Status {
+                    tag: Some(positional[0].clone()),
+                    all,
+                }),
+                _ => Err("usage: status [tag] [--all]".to_string()),
+            }
+        }
         "list" => Ok(Cmd::List {
             tags: rest.to_vec(),
         }),
+        "tag" => {
+            let mut force = false;
+            let mut positional = Vec::new();
+
+            for a in rest {
+                if a == "--force" {
+                    force = true;
+                } else {
+                    positional.push(a.clone());
+                }
+            }
+
+            if positional.len() != 2 {
+                return Err("usage: tag add <name> | tag rm <name> [--force]".to_string());
+            }
+
+            match positional[0].as_str() {
+                "add" => Ok(Cmd::TagAdd {
+                    name: positional[1].clone(),
+                }),
+                "rm" => Ok(Cmd::TagRm {
+                    name: positional[1].clone(),
+                    force,
+                }),
+                other => Err(format!(
+                    "unknown tag subcommand '{other}', usage: tag add <name> | tag rm <name> [--force]"
+                )),
+            }
+        }
         "--help" | "-h" | "help" => Ok(Cmd::Help),
         other => Err(format!("command not valid: '{other}', check zz --help")),
     }
@@ -234,6 +285,8 @@ fn run(command: Cmd) {
             };
             require_tag(&registry, &tag);
 
+            let mut failed = false;
+
             for entry in registry.entries.iter().filter(|e| e.tags.contains(&tag)) {
                 let target = format!("={}", entry.name);
 
@@ -249,8 +302,8 @@ fn run(command: Cmd) {
                             "display-message",
                             "-p",
                             "-t",
-                            &target,
-                            "#{pane_current_path}",
+                            &format!("={}:", entry.name),
+                            "#{session_path}",
                         ])
                         .output()
                         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -275,7 +328,12 @@ fn run(command: Cmd) {
                     println!("started {}", entry.name);
                 } else {
                     eprintln!("failed to start {}", entry.name);
+                    failed = true;
                 }
+            }
+
+            if failed {
+                std::process::exit(1);
             }
         }
 
@@ -303,19 +361,18 @@ fn run(command: Cmd) {
                 }
 
                 if let Ok(o) = Command::new("tmux")
-                    .args([
-                        "list-panes",
-                        "-s",
-                        "-t",
-                        &target,
-                        "-F",
-                        "#{pane_current_command}",
-                    ])
+                    .args(["list-panes", "-s", "-t", &target, "-F", "#{pane_pid}"])
                     .output()
                 {
-                    for cmd in String::from_utf8_lossy(&o.stdout).lines() {
-                        if !SHELLS.contains(&cmd) {
-                            eprintln!("warning: {} is running {cmd}", entry.name);
+                    for pid in String::from_utf8_lossy(&o.stdout).lines() {
+                        let children =
+                            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                                .unwrap_or_default();
+
+                        for child in children.split_whitespace() {
+                            let name = std::fs::read_to_string(format!("/proc/{child}/comm"))
+                                .unwrap_or_default();
+                            eprintln!("warning: {} is running {}", entry.name, name.trim());
                         }
                     }
                 }
@@ -334,7 +391,7 @@ fn run(command: Cmd) {
             }
         }
 
-        Cmd::Status { tag } => {
+        Cmd::Status { tag, all } => {
             let registry = match storage::load() {
                 Ok(r) => r,
                 Err(e) => {
@@ -347,11 +404,12 @@ fn run(command: Cmd) {
             }
 
             let mut all_up = true;
+            let mut hidden = 0;
 
             for entry in registry
                 .entries
                 .iter()
-                .filter(|e| tag.as_ref().map_or(true, |t| e.tags.contains(t)))
+                .filter(|e| tag.as_ref().is_none_or(|t| e.tags.contains(t)))
             {
                 let target = format!("={}", entry.name);
 
@@ -361,12 +419,27 @@ fn run(command: Cmd) {
                     .map(|o| o.status.success())
                     .unwrap_or(false);
 
+                if !running {
+                    all_up = false;
+                    if !all {
+                        hidden += 1;
+                        continue;
+                    }
+                }
+
                 let windows = if running {
-                    Command::new("tmux")
-                        .args(["display-message", "-p", "-t", &target, "#{session_windows}"])
+                    let n = Command::new("tmux")
+                        .args([
+                            "display-message",
+                            "-p",
+                            "-t",
+                            &format!("={}:", entry.name),
+                            "#{session_windows}",
+                        ])
                         .output()
                         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_else(|_| "?".to_string())
+                        .unwrap_or_else(|_| "?".to_string());
+                    format!("{n} win")
                 } else {
                     "-".to_string()
                 };
@@ -377,17 +450,17 @@ fn run(command: Cmd) {
                     " (path missing)"
                 };
 
-                if !running {
-                    all_up = false;
-                }
-
                 println!(
-                    "{:<8} {:<20} {:>3} win  {}{note}",
+                    "{:<8} {:<20} {:<7} {}{note}",
                     if running { "running" } else { "stopped" },
                     entry.name,
                     windows,
                     entry.path
                 );
+            }
+
+            if hidden > 0 {
+                println!("{hidden} stopped, pass --all to see them");
             }
 
             if !all_up {
@@ -426,6 +499,68 @@ fn run(command: Cmd) {
                 if !any {
                     println!("  (empty)");
                 }
+            }
+        }
+
+        Cmd::TagAdd { name } => {
+            let mut registry = match storage::load() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+
+            if registry.tags.contains(&name) {
+                println!("tag '{name}' already exists");
+                return;
+            }
+
+            registry.tags.push(name.clone());
+
+            if let Err(e) = storage::save(&registry) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+
+            println!("created tag {name}");
+        }
+
+        Cmd::TagRm { name, force } => {
+            let mut registry = match storage::load() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            require_tag(&registry, &name);
+
+            let count = registry
+                .entries
+                .iter()
+                .filter(|e| e.tags.contains(&name))
+                .count();
+
+            if count > 0 && !force {
+                eprintln!(
+                    "tag '{name}' still has {count} entries, pass --force to remove it and them"
+                );
+                std::process::exit(1);
+            }
+
+            registry.entries.retain(|e| !e.tags.contains(&name));
+            registry.tags.retain(|t| t != &name);
+
+            if let Err(e) = storage::save(&registry) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+
+            if count > 0 {
+                println!("removed tag {name} and {count} entries");
+            } else {
+                println!("removed tag {name}");
             }
         }
 
