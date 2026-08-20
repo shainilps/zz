@@ -54,7 +54,7 @@ tags are never created implicitly, pass --create-tag to add a new one";
 
 fn parse(args: &[String]) -> Result<Cmd, String> {
     if args.is_empty() {
-        return Err("command required, check zz --help".to_string());
+        return Ok(Cmd::Help);
     }
 
     let rest = &args[1..];
