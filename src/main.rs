@@ -51,7 +51,7 @@ usage:
   zz tag/t add/a <name>                           create a tag
   zz tag/t rm <name> [--force/-f]                  delete a tag, --force/-f if not empty
 
-tags are never created implicitly, pass --create-tag to add a new one";
+tags are never created implicitly, you create one when you need (only reason is: it avoids mistype)";
 
 fn parse(args: &[String]) -> Result<Cmd, String> {
     if args.is_empty() {
