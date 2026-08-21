@@ -425,64 +425,129 @@ fn run(command: Cmd) {
                 require_tag(&registry, t);
             }
 
+            let show = match &tag {
+                Some(t) => vec![t.clone()],
+                None => registry.tags.clone(),
+            };
+
+            let home = dirs::home_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+
             let mut all_up = true;
             let mut hidden = 0;
+            let mut rows: Vec<(String, String, &str, String, String)> = Vec::new();
 
-            for entry in registry
-                .entries
-                .iter()
-                .filter(|e| tag.as_ref().is_none_or(|t| e.tags.contains(t)))
-            {
-                let target = format!("={}", entry.name);
+            for t in &show {
+                for entry in registry.entries.iter().filter(|e| e.tags.contains(t)) {
+                    let target = format!("={}", entry.name);
 
-                let running = Command::new("tmux")
-                    .args(["has-session", "-t", &target])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
+                    let running = Command::new("tmux")
+                        .args(["has-session", "-t", &target])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
 
-                if !running {
-                    all_up = false;
-                    if !all {
-                        hidden += 1;
-                        continue;
+                    if !running {
+                        all_up = false;
+                        if !all {
+                            hidden += 1;
+                            continue;
+                        }
                     }
+
+                    let windows = if running {
+                        Command::new("tmux")
+                            .args([
+                                "display-message",
+                                "-p",
+                                "-t",
+                                &format!("={}:", entry.name),
+                                "#{session_windows}",
+                            ])
+                            .output()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                            .unwrap_or_else(|_| "?".to_string())
+                    } else {
+                        "-".to_string()
+                    };
+
+                    let path = match entry.path.strip_prefix(&home) {
+                        Some(rest)
+                            if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) =>
+                        {
+                            format!("~{rest}")
+                        }
+                        _ => entry.path.clone(),
+                    };
+
+                    let path = if std::path::Path::new(&entry.path).is_dir() {
+                        path
+                    } else {
+                        format!("{path}  (path missing)")
+                    };
+
+                    rows.push((
+                        t.clone(),
+                        entry.name.clone(),
+                        if running { "running" } else { "stopped" },
+                        windows,
+                        path,
+                    ));
+                }
+            }
+
+            let name_w = rows
+                .iter()
+                .map(|r| r.1.chars().count())
+                .chain(std::iter::once(4))
+                .max()
+                .unwrap();
+
+            let win_w = rows
+                .iter()
+                .map(|r| r.3.chars().count())
+                .chain(std::iter::once(3))
+                .max()
+                .unwrap();
+
+            let mut first = true;
+
+            for t in &show {
+                let group: Vec<_> = rows.iter().filter(|r| &r.0 == t).collect();
+                let registered = registry.entries.iter().any(|e| e.tags.contains(t));
+
+                if group.is_empty() && registered {
+                    continue;
                 }
 
-                let windows = if running {
-                    let n = Command::new("tmux")
-                        .args([
-                            "display-message",
-                            "-p",
-                            "-t",
-                            &format!("={}:", entry.name),
-                            "#{session_windows}",
-                        ])
-                        .output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_else(|_| "?".to_string());
-                    format!("{n} win")
-                } else {
-                    "-".to_string()
-                };
+                if !first {
+                    println!();
+                }
+                first = false;
 
-                let note = if std::path::Path::new(&entry.path).is_dir() {
-                    ""
-                } else {
-                    " (path missing)"
-                };
+                println!("{t}");
+
+                if !registered {
+                    println!("  (empty)");
+                    continue;
+                }
 
                 println!(
-                    "{:<8} {:<20} {:<7} {}{note}",
-                    if running { "running" } else { "stopped" },
-                    entry.name,
-                    windows,
-                    entry.path
+                    "  {:<name_w$}  {:<7}  {:>win_w$}  PATH",
+                    "NAME", "STATUS", "WIN"
                 );
+
+                for r in group {
+                    println!("  {:<name_w$}  {:<7}  {:>win_w$}  {}", r.1, r.2, r.3, r.4);
+                }
             }
 
             if hidden > 0 {
-                println!("{hidden} stopped, pass --all to see them");
+                if !first {
+                    println!();
+                }
+                println!("{hidden} stopped, pass --all/-a to see them");
             }
 
             if !all_up {
@@ -509,17 +574,53 @@ fn run(command: Cmd) {
                 tags
             };
 
+            let home = dirs::home_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+
+            let name_w = registry
+                .entries
+                .iter()
+                .filter(|e| show.iter().any(|t| e.tags.contains(t)))
+                .map(|e| e.name.chars().count())
+                .chain(std::iter::once(4))
+                .max()
+                .unwrap();
+
+            let mut first = true;
+
             for t in &show {
+                let group: Vec<_> = registry
+                    .entries
+                    .iter()
+                    .filter(|e| e.tags.contains(t))
+                    .collect();
+
+                if !first {
+                    println!();
+                }
+                first = false;
+
                 println!("{t}");
 
-                let mut any = false;
-                for entry in registry.entries.iter().filter(|e| e.tags.contains(t)) {
-                    println!("  {:<20} {}", entry.name, entry.path);
-                    any = true;
+                if group.is_empty() {
+                    println!("  (empty)");
+                    continue;
                 }
 
-                if !any {
-                    println!("  (empty)");
+                println!("  {:<name_w$}  PATH", "NAME");
+
+                for entry in group {
+                    let path = match entry.path.strip_prefix(&home) {
+                        Some(rest)
+                            if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) =>
+                        {
+                            format!("~{rest}")
+                        }
+                        _ => entry.path.clone(),
+                    };
+
+                    println!("  {:<name_w$}  {path}", entry.name);
                 }
             }
         }
