@@ -74,7 +74,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
             }
 
             if positional.len() != 3 {
-                return Err("usage: add <path> <name> <tag> [--create-tag/-c-t]".to_string());
+                return Err("usage: add/a <path> <name> <tag> [--create-tag/-c-t]".to_string());
             }
 
             Ok(Cmd::Add {
@@ -94,7 +94,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
         }
         "run" | "rn" => {
             if rest.len() != 1 {
-                return Err("usage: run <tag>".to_string());
+                return Err("usage: run/rn <tag>".to_string());
             }
             Ok(Cmd::Run {
                 tag: rest[0].clone(),
@@ -113,7 +113,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
             }
 
             if rest.len() != 1 {
-                return Err("usage: kill <tag> [--force/-f]".to_string());
+                return Err("usage: kill/k <tag> [--force/-f]".to_string());
             }
             Ok(Cmd::Kill {
                 tag: positional[0].clone(),
