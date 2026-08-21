@@ -19,6 +19,7 @@ enum Cmd {
     },
     Kill {
         tag: String,
+        force: bool,
     },
     Status {
         tag: Option<String>,
@@ -41,14 +42,14 @@ const HELP: &str = "\
 zz - tmux session manager
 
 usage:
-  zz add <path> <name> <tag> [--create-tag]   register a directory
+  zz add/a <path> <name> <tag> [--create-tag/-c-t]   register a directory
   zz rm <name>                                remove an entry
-  zz run <tag>                                start every session in the tag
-  zz kill <tag>                               kill the tag's sessions
-  zz status [tag] [--all]                     report running sessions, --all for stopped too
-  zz list [tag...]                            list what is registered
-  zz tag add <name>                           create a tag
-  zz tag rm <name> [--force]                  delete a tag, --force if not empty
+  zz run/rn <tag>                                start every session in the tag
+  zz kill/k <tag>                               kill the tag's sessions, pass --force/-f to kill running session
+  zz status/s [tag] [--all/-a]                     report running sessions, --all/-a for stopped too
+  zz list/ls [tag...]                            list what is registered
+  zz tag/t add/a <name>                           create a tag
+  zz tag/t rm <name> [--force/-f]                  delete a tag, --force/-f if not empty
 
 tags are never created implicitly, pass --create-tag to add a new one";
 
@@ -60,12 +61,12 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
     let rest = &args[1..];
 
     match args[0].as_str() {
-        "add" => {
+        "add" | "a" => {
             let mut create_tag = false;
             let mut positional = Vec::new();
 
             for a in rest {
-                if a == "--create-tag" {
+                if a == "--create-tag" || a == "-c-t" {
                     create_tag = true;
                 } else {
                     positional.push(a.clone());
@@ -73,7 +74,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
             }
 
             if positional.len() != 3 {
-                return Err("usage: add <path> <name> <tag> [--create-tag]".to_string());
+                return Err("usage: add <path> <name> <tag> [--create-tag/-c-t]".to_string());
             }
 
             Ok(Cmd::Add {
@@ -91,7 +92,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                 name: rest[0].clone(),
             })
         }
-        "run" => {
+        "run" | "rn" => {
             if rest.len() != 1 {
                 return Err("usage: run <tag>".to_string());
             }
@@ -99,20 +100,32 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                 tag: rest[0].clone(),
             })
         }
-        "kill" => {
+        "kill" | "k" => {
+            let mut force = false;
+            let mut positional = Vec::new();
+
+            for a in rest {
+                if a == "--force" || a == "-f" {
+                    force = true;
+                } else {
+                    positional.push(a.clone());
+                }
+            }
+
             if rest.len() != 1 {
-                return Err("usage: kill <tag>".to_string());
+                return Err("usage: kill <tag> [--force/-f]".to_string());
             }
             Ok(Cmd::Kill {
-                tag: rest[0].clone(),
+                tag: positional[0].clone(),
+                force,
             })
         }
-        "status" => {
+        "status" | "s" => {
             let mut all = false;
             let mut positional = Vec::new();
 
             for a in rest {
-                if a == "--all" {
+                if a == "--all" || a == "-a" {
                     all = true;
                 } else {
                     positional.push(a.clone());
@@ -125,18 +138,18 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                     tag: Some(positional[0].clone()),
                     all,
                 }),
-                _ => Err("usage: status [tag] [--all]".to_string()),
+                _ => Err("usage: status/s [tag] [--all/-a]".to_string()),
             }
         }
-        "list" => Ok(Cmd::List {
+        "list" | "ls" => Ok(Cmd::List {
             tags: rest.to_vec(),
         }),
-        "tag" => {
+        "tag" | "t" => {
             let mut force = false;
             let mut positional = Vec::new();
 
             for a in rest {
-                if a == "--force" {
+                if a == "--force" || a == "-f" {
                     force = true;
                 } else {
                     positional.push(a.clone());
@@ -144,11 +157,11 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
             }
 
             if positional.len() != 2 {
-                return Err("usage: tag add <name> | tag rm <name> [--force]".to_string());
+                return Err("usage: tag/t add/a <name> | tag/t rm <name> [--force/-f]".to_string());
             }
 
             match positional[0].as_str() {
-                "add" => Ok(Cmd::TagAdd {
+                "add" | "a" => Ok(Cmd::TagAdd {
                     name: positional[1].clone(),
                 }),
                 "rm" => Ok(Cmd::TagRm {
@@ -156,12 +169,14 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                     force,
                 }),
                 other => Err(format!(
-                    "unknown tag subcommand '{other}', usage: tag add <name> | tag rm <name> [--force]"
+                    "unknown tag subcommand '{other}', usage: tag/t add/a <name> | tag/t rm <name> [--force/-f]"
                 )),
             }
         }
         "--help" | "-h" | "help" => Ok(Cmd::Help),
-        other => Err(format!("command not valid: '{other}', check zz --help")),
+        other => Err(format!(
+            "command not valid: '{other}', check zz --help/-h/help"
+        )),
     }
 }
 
@@ -220,7 +235,7 @@ fn run(command: Cmd) {
                 if create_tag {
                     registry.tags.push(tag.clone());
                 } else {
-                    eprintln!("tag '{tag}' does not exist, use --create-tag to create it");
+                    eprintln!("tag '{tag}' does not exist, use --create-tag/-c-t to create it");
                     std::process::exit(1);
                 }
             }
@@ -337,7 +352,7 @@ fn run(command: Cmd) {
             }
         }
 
-        Cmd::Kill { tag } => {
+        Cmd::Kill { tag, force } => {
             let registry = match storage::load() {
                 Ok(r) => r,
                 Err(e) => {
@@ -360,6 +375,8 @@ fn run(command: Cmd) {
                     continue;
                 }
 
+                let mut have_process = false;
+
                 if let Ok(o) = Command::new("tmux")
                     .args(["list-panes", "-s", "-t", &target, "-F", "#{pane_pid}"])
                     .output()
@@ -373,8 +390,13 @@ fn run(command: Cmd) {
                             let name = std::fs::read_to_string(format!("/proc/{child}/comm"))
                                 .unwrap_or_default();
                             eprintln!("warning: {} is running {}", entry.name, name.trim());
+                            have_process = true;
                         }
                     }
+                }
+
+                if have_process && !force {
+                    continue;
                 }
 
                 let killed = Command::new("tmux")
@@ -544,7 +566,7 @@ fn run(command: Cmd) {
 
             if count > 0 && !force {
                 eprintln!(
-                    "tag '{name}' still has {count} entries, pass --force to remove it and them"
+                    "tag '{name}' still has {count} entries, pass --force/-f to remove it and them"
                 );
                 std::process::exit(1);
             }
