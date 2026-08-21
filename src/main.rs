@@ -112,7 +112,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                 }
             }
 
-            if rest.len() != 1 {
+            if positional.len() != 1 {
                 return Err("usage: kill/k <tag> [--force/-f]".to_string());
             }
             Ok(Cmd::Kill {
