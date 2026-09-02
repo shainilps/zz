@@ -15,10 +15,12 @@ enum Cmd {
         name: String,
     },
     Run {
-        tag: String,
+        name: bool,
+        key: String,
     },
     Kill {
-        tag: String,
+        key: String,
+        name: bool,
         force: bool,
     },
     Status {
@@ -43,13 +45,13 @@ zz - tmux session manager
 
 usage:
   zz add/a <path> <name> <tag> [--create-tag/-c-t]   register a directory
-  zz rm <name>                                remove an entry
-  zz run/rn <tag>                                start every session in the tag
-  zz kill/k <tag>                               kill the tag's sessions, pass --force/-f to kill running session
-  zz status/s [tag] [--all/-a]                     report running sessions, --all/-a for stopped too
-  zz list/ls [tag...]                            list what is registered
-  zz tag/t add/a <name>                           create a tag
-  zz tag/t rm <name> [--force/-f]                  delete a tag, --force/-f if not empty
+  zz rm <name>                                  remove an entry
+  zz run/rn <tag>/<name> [--name/-n]            start every session in the tag
+  zz kill/k <tag>/<name> [--name/-n] [--force/-f] kill the sessions by tag or name, --force/-f to kill running session
+  zz status/s/st [tag] [--all/-a]               report running sessions, --all/-a for stopped too
+  zz list/ls [tag...]                           list what is registered
+  zz tag/t add/a <name>                         create a tag
+  zz tag/t rm <name> [--force/-f]               delete a tag, --force/-f if not empty
 
 tags are never created implicitly, you create one when you need (only reason is: it avoids mistype)";
 
@@ -93,34 +95,51 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
             })
         }
         "run" | "rn" => {
-            if rest.len() != 1 {
-                return Err("usage: run/rn <tag>".to_string());
-            }
-            Ok(Cmd::Run {
-                tag: rest[0].clone(),
-            })
-        }
-        "kill" | "k" => {
-            let mut force = false;
+            let mut name_tag = false;
             let mut positional = Vec::new();
 
             for a in rest {
-                if a == "--force" || a == "-f" {
-                    force = true;
+                if a == "--name" || a == "-n" {
+                    name_tag = true;
                 } else {
                     positional.push(a.clone());
                 }
             }
 
             if positional.len() != 1 {
-                return Err("usage: kill/k <tag> [--force/-f]".to_string());
+                return Err("usage: run/rn <tag>/<name> [--name/-n]".to_string());
+            }
+
+            Ok(Cmd::Run {
+                key: positional[0].clone(),
+                name: name_tag,
+            })
+        }
+        "kill" | "k" => {
+            let mut force = false;
+            let mut name_tag = false;
+            let mut positional = Vec::new();
+
+            for a in rest {
+                if a == "--force" || a == "-f" {
+                    force = true;
+                } else if a == "--name" || a == "-n" {
+                    name_tag = true;
+                } else {
+                    positional.push(a.clone());
+                }
+            }
+
+            if positional.len() != 1 {
+                return Err("usage: kill/k <tag>/<name> [--name/-n] [--force/-f]".to_string());
             }
             Ok(Cmd::Kill {
-                tag: positional[0].clone(),
+                key: positional[0].clone(),
+                name: name_tag,
                 force,
             })
         }
-        "status" | "s" => {
+        "status" | "s" | "st" => {
             let mut all = false;
             let mut positional = Vec::new();
 
@@ -138,7 +157,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                     tag: Some(positional[0].clone()),
                     all,
                 }),
-                _ => Err("usage: status/s [tag] [--all/-a]".to_string()),
+                _ => Err("usage: status/s/st [tag] [--all/-a]".to_string()),
             }
         }
         "list" | "ls" => Ok(Cmd::List {
@@ -290,7 +309,7 @@ fn run(command: Cmd) {
             println!("removed {name}");
         }
 
-        Cmd::Run { tag } => {
+        Cmd::Run { key, name } => {
             let registry = match storage::load() {
                 Ok(r) => r,
                 Err(e) => {
@@ -298,11 +317,28 @@ fn run(command: Cmd) {
                     std::process::exit(1);
                 }
             };
-            require_tag(&registry, &tag);
+            if name {
+                if !registry.entries.iter().any(|e| e.name == key) {
+                    eprintln!("name '{key}' does not exist");
+                    std::process::exit(1);
+                }
+            } else {
+                require_tag(&registry, &key);
+            }
 
             let mut failed = false;
 
-            for entry in registry.entries.iter().filter(|e| e.tags.contains(&tag)) {
+            let entries: Vec<_> = if name {
+                registry.entries.iter().filter(|e| e.name == key).collect()
+            } else {
+                registry
+                    .entries
+                    .iter()
+                    .filter(|e| e.tags.contains(&key))
+                    .collect()
+            };
+
+            for entry in entries {
                 let target = format!("={}", entry.name);
 
                 let running = Command::new("tmux")
@@ -352,7 +388,7 @@ fn run(command: Cmd) {
             }
         }
 
-        Cmd::Kill { tag, force } => {
+        Cmd::Kill { key, name, force } => {
             let registry = match storage::load() {
                 Ok(r) => r,
                 Err(e) => {
@@ -360,9 +396,27 @@ fn run(command: Cmd) {
                     std::process::exit(1);
                 }
             };
-            require_tag(&registry, &tag);
 
-            for entry in registry.entries.iter().filter(|e| e.tags.contains(&tag)) {
+            if name {
+                if !registry.entries.iter().any(|e| e.name == key) {
+                    eprintln!("name '{key}' does not exist");
+                    std::process::exit(1);
+                }
+            } else {
+                require_tag(&registry, &key);
+            }
+
+            let entries: Vec<_> = if name {
+                registry.entries.iter().filter(|e| e.name == key).collect()
+            } else {
+                registry
+                    .entries
+                    .iter()
+                    .filter(|e| e.tags.contains(&key))
+                    .collect()
+            };
+
+            for entry in entries {
                 let target = format!("={}", entry.name);
 
                 let running = Command::new("tmux")
