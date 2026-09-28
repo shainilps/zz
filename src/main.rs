@@ -1,6 +1,7 @@
 mod helper;
 mod storage;
 
+use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 #[derive(Debug)]
@@ -37,6 +38,9 @@ enum Cmd {
         name: String,
         force: bool,
     },
+    Attach {
+        tag: String,
+    },
     Help,
 }
 
@@ -44,7 +48,8 @@ const HELP: &str = "\
 zz - tmux session manager
 
 usage:
-  zz add/a <path> <name> <tag> [--create-tag/-c-t]   register a directory
+  zz attach/a/at <tag>                          attach to the tag's tmux server
+  zz add <path> <name> <tag> [--create-tag/-c-t]   register a directory
   zz rm <name>                                  remove an entry
   zz run/rn <tag>/<name> [--name/-n]            start every session in the tag
   zz kill/k <tag>/<name> [--name/-n] [--force/-f] kill the sessions by tag or name, --force/-f to kill running session
@@ -63,7 +68,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
     let rest = &args[1..];
 
     match args[0].as_str() {
-        "add" | "a" => {
+        "add" => {
             let mut create_tag = false;
             let mut positional = Vec::new();
 
@@ -76,7 +81,7 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
             }
 
             if positional.len() != 3 {
-                return Err("usage: add/a <path> <name> <tag> [--create-tag/-c-t]".to_string());
+                return Err("usage: add <path> <name> <tag> [--create-tag/-c-t]".to_string());
             }
 
             Ok(Cmd::Add {
@@ -191,6 +196,14 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                     "unknown tag subcommand '{other}', usage: tag/t add/a <name> | tag/t rm <name> [--force/-f]"
                 )),
             }
+        }
+        "attach" | "a" | "at" => {
+            if rest.len() != 1 {
+                return Err("usage: attach/a/at <tag>".to_string());
+            }
+            Ok(Cmd::Attach {
+                tag: rest[0].clone(),
+            })
         }
         "--help" | "-h" | "help" => Ok(Cmd::Help),
         other => Err(format!(
@@ -340,9 +353,10 @@ fn run(command: Cmd) {
 
             for entry in entries {
                 let target = format!("={}", entry.name);
+                let socket = format!("zz-{}", entry.tags[0]);
 
                 let running = Command::new("tmux")
-                    .args(["has-session", "-t", &target])
+                    .args(["-L", &socket, "has-session", "-t", &target])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -350,6 +364,8 @@ fn run(command: Cmd) {
                 if running {
                     let live = Command::new("tmux")
                         .args([
+                            "-L",
+                            &socket,
                             "display-message",
                             "-p",
                             "-t",
@@ -370,7 +386,16 @@ fn run(command: Cmd) {
                 }
 
                 let started = Command::new("tmux")
-                    .args(["new-session", "-d", "-s", &entry.name, "-c", &entry.path])
+                    .args([
+                        "-L",
+                        &socket,
+                        "new-session",
+                        "-d",
+                        "-s",
+                        &entry.name,
+                        "-c",
+                        &entry.path,
+                    ])
                     .status()
                     .map(|s| s.success())
                     .unwrap_or(false);
@@ -418,9 +443,10 @@ fn run(command: Cmd) {
 
             for entry in entries {
                 let target = format!("={}", entry.name);
+                let socket = format!("zz-{}", entry.tags[0]);
 
                 let running = Command::new("tmux")
-                    .args(["has-session", "-t", &target])
+                    .args(["-L", &socket, "has-session", "-t", &target])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -432,7 +458,16 @@ fn run(command: Cmd) {
                 let mut have_process = false;
 
                 if let Ok(o) = Command::new("tmux")
-                    .args(["list-panes", "-s", "-t", &target, "-F", "#{pane_pid}"])
+                    .args([
+                        "-L",
+                        &socket,
+                        "list-panes",
+                        "-s",
+                        "-t",
+                        &target,
+                        "-F",
+                        "#{pane_pid}",
+                    ])
                     .output()
                 {
                     for pid in String::from_utf8_lossy(&o.stdout).lines() {
@@ -454,7 +489,7 @@ fn run(command: Cmd) {
                 }
 
                 let killed = Command::new("tmux")
-                    .args(["kill-session", "-t", &target])
+                    .args(["-L", &socket, "kill-session", "-t", &target])
                     .status()
                     .map(|s| s.success())
                     .unwrap_or(false);
@@ -493,11 +528,13 @@ fn run(command: Cmd) {
             let mut rows: Vec<(String, String, &str, String, String)> = Vec::new();
 
             for t in &show {
+                let socket = format!("zz-{t}");
+
                 for entry in registry.entries.iter().filter(|e| e.tags.contains(t)) {
                     let target = format!("={}", entry.name);
 
                     let running = Command::new("tmux")
-                        .args(["has-session", "-t", &target])
+                        .args(["-L", &socket, "has-session", "-t", &target])
                         .output()
                         .map(|o| o.status.success())
                         .unwrap_or(false);
@@ -513,6 +550,8 @@ fn run(command: Cmd) {
                     let windows = if running {
                         Command::new("tmux")
                             .args([
+                                "-L",
+                                &socket,
                                 "display-message",
                                 "-p",
                                 "-t",
@@ -739,6 +778,49 @@ fn run(command: Cmd) {
             } else {
                 println!("removed tag {name}");
             }
+        }
+
+        Cmd::Attach { tag } => {
+            let registry = match storage::load() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            require_tag(&registry, &tag);
+
+            let socket = format!("zz-{tag}");
+
+            let running = Command::new("tmux")
+                .args(["-L", &socket, "list-sessions"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            if !running {
+                eprintln!("no sessions running for tag '{tag}', run: zz run {tag}");
+                std::process::exit(1);
+            }
+
+            // inside tmux: replace this client with one on the tag's server, no nesting
+            if std::env::var("TMUX").is_ok_and(|v| !v.is_empty()) {
+                let ok = Command::new("tmux")
+                    .args(["detach-client", "-E", &format!("tmux -L {socket} attach")])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+
+                if !ok {
+                    eprintln!("failed to switch to {socket}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            let e = Command::new("tmux").args(["-L", &socket, "attach"]).exec();
+            eprintln!("failed to attach to {socket}: {e}");
+            std::process::exit(1);
         }
 
         Cmd::Help => println!("{HELP}"),
