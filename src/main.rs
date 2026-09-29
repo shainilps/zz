@@ -58,7 +58,9 @@ usage:
   zz tag/t add/a <name>                         create a tag
   zz tag/t rm <name> [--force/-f]               delete a tag, --force/-f if not empty
 
-tags are never created implicitly, you create one when you need (only reason is: it avoids mistype)";
+tags are never created implicitly, you create one when you need (only reason is: it avoids mistype)
+attach, add and run accept a shortened tag (fr or frlnc for freelance) as long as only one tag matches,
+everything else needs the full name";
 
 fn parse(args: &[String]) -> Result<Cmd, String> {
     if args.is_empty() {
@@ -228,9 +230,36 @@ fn main() {
     run(command);
 }
 
-fn require_tag(registry: &storage::Registry, tag: &str) {
+// fuzzy: accept a unique tag whose letters contain `tag` in order (frlnc -> freelance),
+// only for commands that can't destroy anything
+fn require_tag(registry: &storage::Registry, tag: &str, fuzzy: bool) -> String {
     if registry.tags.iter().any(|t| t == tag) {
-        return;
+        return tag.to_string();
+    }
+
+    let matches: Vec<&str> = registry
+        .tags
+        .iter()
+        .filter(|t| {
+            let mut rest = t.chars();
+            fuzzy && tag.chars().all(|c| rest.any(|x| x == c))
+        })
+        .map(|t| t.as_str())
+        .collect();
+
+    // a unique prefix wins over looser matches, so fr is freelance even though forme has f..r
+    let starts: Vec<&str> = matches.iter().copied().filter(|t| t.starts_with(tag)).collect();
+    if starts.len() == 1 {
+        return starts[0].to_string();
+    }
+
+    if matches.len() == 1 {
+        return matches[0].to_string();
+    }
+
+    if matches.len() > 1 {
+        eprintln!("tag '{tag}' is ambiguous, could be: {}", matches.join(", "));
+        std::process::exit(1);
     }
 
     let near = registry
@@ -252,7 +281,7 @@ fn run(command: Cmd) {
         Cmd::Add {
             path,
             name,
-            tag,
+            mut tag,
             create_tag,
         } => {
             let mut registry = match storage::load() {
@@ -266,6 +295,11 @@ fn run(command: Cmd) {
             if !registry.tags.contains(&tag) {
                 if create_tag {
                     registry.tags.push(tag.clone());
+                } else if registry.tags.iter().any(|t| {
+                    let mut rest = t.chars();
+                    tag.chars().all(|c| rest.any(|x| x == c))
+                }) {
+                    tag = require_tag(&registry, &tag, true);
                 } else {
                     eprintln!("tag '{tag}' does not exist, use --create-tag/-c-t to create it");
                     std::process::exit(1);
@@ -322,7 +356,7 @@ fn run(command: Cmd) {
             println!("removed {name}");
         }
 
-        Cmd::Run { key, name } => {
+        Cmd::Run { mut key, name } => {
             let registry = match storage::load() {
                 Ok(r) => r,
                 Err(e) => {
@@ -336,7 +370,7 @@ fn run(command: Cmd) {
                     std::process::exit(1);
                 }
             } else {
-                require_tag(&registry, &key);
+                key = require_tag(&registry, &key, true);
             }
 
             let mut failed = false;
@@ -428,7 +462,7 @@ fn run(command: Cmd) {
                     std::process::exit(1);
                 }
             } else {
-                require_tag(&registry, &key);
+                require_tag(&registry, &key, false);
             }
 
             let entries: Vec<_> = if name {
@@ -511,7 +545,7 @@ fn run(command: Cmd) {
                 }
             };
             if let Some(t) = &tag {
-                require_tag(&registry, t);
+                require_tag(&registry, t, false);
             }
 
             let show = match &tag {
@@ -658,7 +692,7 @@ fn run(command: Cmd) {
             };
 
             for t in &tags {
-                require_tag(&registry, t);
+                require_tag(&registry, t, false);
             }
 
             let show = if tags.is_empty() {
@@ -750,7 +784,7 @@ fn run(command: Cmd) {
                     std::process::exit(1);
                 }
             };
-            require_tag(&registry, &name);
+            require_tag(&registry, &name, false);
 
             let count = registry
                 .entries
@@ -788,7 +822,7 @@ fn run(command: Cmd) {
                     std::process::exit(1);
                 }
             };
-            require_tag(&registry, &tag);
+            let tag = require_tag(&registry, &tag, true);
 
             let socket = format!("zz-{tag}");
 
