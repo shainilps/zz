@@ -59,8 +59,8 @@ usage:
   zz tag/t rm <name> [--force/-f]               delete a tag, --force/-f if not empty
 
 tags are never created implicitly, you create one when you need (only reason is: it avoids mistype)
-attach, add and run accept a shortened tag (fr or frlnc for freelance) as long as only one tag matches,
-everything else needs the full name";
+attach, add, run, status and list accept a shortened tag (fr or frlnc for freelance) as long as only one tag matches,
+run --name accepts a shortened name the same way, everything else needs the full name";
 
 fn parse(args: &[String]) -> Result<Cmd, String> {
     if args.is_empty() {
@@ -366,8 +366,30 @@ fn run(command: Cmd) {
             };
             if name {
                 if !registry.entries.iter().any(|e| e.name == key) {
-                    eprintln!("name '{key}' does not exist");
-                    std::process::exit(1);
+                    // same fuzzy rules as tags: unique prefix first, then letters in order
+                    let matches: Vec<&str> = registry
+                        .entries
+                        .iter()
+                        .map(|e| e.name.as_str())
+                        .filter(|n| {
+                            let mut rest = n.chars();
+                            key.chars().all(|c| rest.any(|x| x == c))
+                        })
+                        .collect();
+                    let starts: Vec<&str> =
+                        matches.iter().copied().filter(|n| n.starts_with(&key)).collect();
+
+                    if starts.len() == 1 {
+                        key = starts[0].to_string();
+                    } else if matches.len() == 1 {
+                        key = matches[0].to_string();
+                    } else if matches.len() > 1 {
+                        eprintln!("name '{key}' is ambiguous, could be: {}", matches.join(", "));
+                        std::process::exit(1);
+                    } else {
+                        eprintln!("name '{key}' does not exist");
+                        std::process::exit(1);
+                    }
                 }
             } else {
                 key = require_tag(&registry, &key, true);
@@ -544,9 +566,7 @@ fn run(command: Cmd) {
                     std::process::exit(1);
                 }
             };
-            if let Some(t) = &tag {
-                require_tag(&registry, t, false);
-            }
+            let tag = tag.map(|t| require_tag(&registry, &t, true));
 
             let show = match &tag {
                 Some(t) => vec![t.clone()],
@@ -691,9 +711,7 @@ fn run(command: Cmd) {
                 }
             };
 
-            for t in &tags {
-                require_tag(&registry, t, false);
-            }
+            let tags: Vec<String> = tags.iter().map(|t| require_tag(&registry, t, true)).collect();
 
             let show = if tags.is_empty() {
                 registry.tags.clone()
